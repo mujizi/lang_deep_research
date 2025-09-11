@@ -42,7 +42,7 @@ from open_deep_research.state import (
 from open_deep_research.utils import (
     anthropic_websearch_called,
     get_all_tools,
-    get_api_key_for_model,
+   
     get_model_token_limit,
     get_notes_from_tool_calls,
     get_today_str,
@@ -51,10 +51,24 @@ from open_deep_research.utils import (
     remove_up_to_last_ai_message,
     think_tool,
 )
+from langchain_openai import AzureChatOpenAI
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
+azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+api_version = os.getenv("OPENAI_API_VERSION")
 
 # Initialize a configurable model that we will use throughout the agent
+# configurable_model = AzureChatOpenAI(
+#     azure_deployment="gpt-4.1",
+#     api_key=azure_key,
+#     azure_endpoint=azure_endpoint,
+#     api_version=api_version,
+# )
 configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "api_key"),
+    configurable_fields=("model", "max_tokens", "api_key")
 )
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -81,7 +95,9 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     model_config = {
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     }
     
@@ -134,7 +150,9 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     research_model_config = {
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     }
     
@@ -194,7 +212,9 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     research_model_config = {
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     }
     
@@ -222,6 +242,7 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         }
     )
 
+
 async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Command[Literal["supervisor", "__end__"]]:
     """Execute tools called by the supervisor, including research delegation and strategic thinking.
     
@@ -242,7 +263,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     supervisor_messages = state.get("supervisor_messages", [])
     research_iterations = state.get("research_iterations", 0)
     most_recent_message = supervisor_messages[-1]
-    
+   
     # Define exit criteria for research phase
     exceeded_allowed_iterations = research_iterations > configurable.max_researcher_iterations
     no_tool_calls = not most_recent_message.tool_calls
@@ -290,7 +311,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             # Limit concurrent research units to prevent resource exhaustion
             allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
             overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
-            
+        
             # Execute research tasks in parallel
             research_tasks = [
                 researcher_subgraph.ainvoke({
@@ -301,9 +322,12 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                 }, config) 
                 for tool_call in allowed_conduct_research_calls
             ]
-            
-            tool_results = await asyncio.gather(*research_tasks)
-            
+            print('--------------------------------research_tasks--------------------------------')
+          
+            try:
+                tool_results = await asyncio.gather(*research_tasks)
+            except Exception as e:
+                print(f"Error: {e}")
             # Create tool messages with research results
             for observation, tool_call in zip(tool_results, allowed_conduct_research_calls):
                 all_tool_messages.append(ToolMessage(
@@ -347,7 +371,6 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
         goto="supervisor",
         update=update_payload
     ) 
-
 # Supervisor Subgraph Construction
 # Creates the supervisor workflow that manages research delegation and coordination
 supervisor_builder = StateGraph(SupervisorState, config_schema=Configuration)
@@ -382,6 +405,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     
     # Get all available research tools (search, MCP, think_tool)
     tools = await get_all_tools(config)
+
     if len(tools) == 0:
         raise ValueError(
             "No tools found to conduct research: Please configure either your "
@@ -392,7 +416,9 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     research_model_config = {
         "model": configurable.research_model,
         "max_tokens": configurable.research_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.research_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     }
     
@@ -437,7 +463,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     
     This function handles various types of researcher tool calls:
     1. think_tool - Strategic reflection that continues the research conversation
-    2. Search tools (tavily_search, web_search) - Information gathering
+    2. Search tools (bocha_search, web_search) - Information gathering
     3. MCP tools - External tool integrations
     4. ResearchComplete - Signals completion of individual research task
     
@@ -461,14 +487,23 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     )
     
     if not has_tool_calls and not has_native_search:
+
         return Command(goto="compress_research")
     
     # Step 2: Handle other tool calls (search, MCP tools, etc.)
     tools = await get_all_tools(config)
-    tools_by_name = {
-        tool.name if hasattr(tool, "name") else tool.get("name", "web_search"): tool 
-        for tool in tools
-    }
+   
+   
+    def _tool_name(t):
+        if hasattr(t, "name"):
+            return t.name
+        n = getattr(t, "__name__", None)
+        if n:
+            return n
+        if isinstance(t, dict):
+            return t.get("name", "web_search")
+        return type(t).__name__
+    tools_by_name = { _tool_name(t): t for t in tools }
     
     # Execute all tool calls in parallel
     tool_calls = most_recent_message.tool_calls
@@ -527,13 +562,15 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     synthesizer_model = configurable_model.with_config({
         "model": configurable.compression_model,
         "max_tokens": configurable.compression_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.compression_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     })
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
-    
+   
     # Add instruction to switch from research mode to compression mode
     researcher_messages.append(HumanMessage(content=compress_research_simple_human_message))
     
@@ -544,12 +581,13 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     while synthesis_attempts < max_attempts:
         try:
             # Create system prompt focused on compression task
+           
             compression_prompt = compress_research_system_prompt.format(date=get_today_str())
             messages = [SystemMessage(content=compression_prompt)] + researcher_messages
-            
+           
             # Execute compression
             response = await synthesizer_model.ainvoke(messages)
-            
+      
             # Extract raw notes from all tool and AI messages
             raw_notes_content = "\n".join([
                 str(message.content) 
@@ -567,6 +605,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             
             # Handle token limit exceeded by removing older messages
             if is_token_limit_exceeded(e, configurable.research_model):
+                print('-------------------------------------11111111111111111111------------------------------------')
                 researcher_messages = remove_up_to_last_ai_message(researcher_messages)
                 continue
             
@@ -627,7 +666,9 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     writer_model_config = {
         "model": configurable.final_report_model,
         "max_tokens": configurable.final_report_model_max_tokens,
-        "api_key": get_api_key_for_model(configurable.final_report_model, config),
+        "api_key": azure_key,
+        "azure_endpoint": azure_endpoint,
+        "api_version": api_version,
         "tags": ["langsmith:nostream"]
     }
     

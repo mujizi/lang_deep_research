@@ -27,27 +27,29 @@ from langchain_core.tools import (
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.config import get_store
 from mcp import McpError
-from tavily import AsyncTavilyClient
-
+# from tavily import AsyncTavilyClient
+from dotenv import load_dotenv
+load_dotenv()
+import httpx
 from open_deep_research.configuration import Configuration, SearchAPI
 from open_deep_research.prompts import summarize_webpage_prompt
 from open_deep_research.state import ResearchComplete, Summary
 
 ##########################
-# Tavily Search Tool Utils
+# Bocha Search Tool Utils
 ##########################
-TAVILY_SEARCH_DESCRIPTION = (
+BOCHA_SEARCH_DESCRIPTION = (
     "A search engine optimized for comprehensive, accurate, and trusted results. "
     "Useful for when you need to answer questions about current events."
 )
-@tool(description=TAVILY_SEARCH_DESCRIPTION)
-async def tavily_search(
+@tool(description=BOCHA_SEARCH_DESCRIPTION)
+async def bocha_search(
     queries: List[str],
     max_results: Annotated[int, InjectedToolArg] = 5,
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
     config: RunnableConfig = None
 ) -> str:
-    """Fetch and summarize search results from Tavily search API.
+    """Fetch and summarize search results from bocha search API.
 
     Args:
         queries: List of search queries to execute
@@ -59,14 +61,14 @@ async def tavily_search(
         Formatted string containing summarized search results
     """
     # Step 1: Execute search queries asynchronously
-    search_results = await tavily_search_async(
+    search_results = await bocha_search_async(
         queries,
         max_results=max_results,
         topic=topic,
         include_raw_content=True,
         config=config
     )
-    
+  
     # Step 2: Deduplicate results by URL to avoid processing the same content multiple times
     unique_results = {}
     for response in search_results:
@@ -82,11 +84,13 @@ async def tavily_search(
     max_char_to_include = configurable.max_content_length
     
     # Initialize summarization model with retry logic
-    model_api_key = get_api_key_for_model(configurable.summarization_model, config)
+    # model_api_key = get_api_key_for_model(configurable.summarization_model, config)
     summarization_model = init_chat_model(
         model=configurable.summarization_model,
         max_tokens=configurable.summarization_model_max_tokens,
-        api_key=model_api_key,
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_version=os.getenv("OPENAI_API_VERSION"),
         tags=["langsmith:nostream"]
     ).with_structured_output(Summary).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
@@ -135,14 +139,15 @@ async def tavily_search(
     
     return formatted_output
 
-async def tavily_search_async(
+#        
+async def bocha_search_async(
     search_queries, 
-    max_results: int = 5, 
+    max_results: int = 20, 
     topic: Literal["general", "news", "finance"] = "general", 
     include_raw_content: bool = True, 
     config: RunnableConfig = None
 ):
-    """Execute multiple Tavily search queries asynchronously.
+    """Execute multiple Bocha search queries asynchronously.
     
     Args:
         search_queries: List of search query strings to execute
@@ -152,21 +157,53 @@ async def tavily_search_async(
         config: Runtime configuration for API key access
         
     Returns:
-        List of search result dictionaries from Tavily API
+        List of search result dictionaries from Bocha API
     """
-    # Initialize the Tavily client with API key from config
-    tavily_client = AsyncTavilyClient(api_key=get_tavily_api_key(config))
+    url = 'https://api.bochaai.com/v1/web-search'
+    api_key = os.getenv("BOCHA_API_KEY")
+    headers = {
+        'Authorization': api_key,
+        'Content-Type': 'application/json'
+    }
     
     # Create search tasks for parallel execution
-    search_tasks = [
-        tavily_client.search(
-            query,
-            max_results=max_results,
-            include_raw_content=include_raw_content,
-            topic=topic
-        )
-        for query in search_queries
-    ]
+    async def single_search(query):
+        data = {
+            "query": query,
+            "max_results": max_results,
+            "topic": topic,
+            "include_raw_content": include_raw_content,
+            "summary": True,
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                
+                response = await client.post(url, headers=headers, json=data, timeout=10.0)
+            
+                response.raise_for_status()
+                
+                json_response = response.json()
+                webpages = json_response.get("data", {}).get("webPages", {}).get("value", [])
+                
+                # Format results to match expected structure
+                formatted_results = []
+                for page in webpages:
+                    result = {
+                        "title": page.get('name', ''),
+                        "url": page.get('url', ''),
+                        "content": page.get('summary', 'nosummary'),
+                        "raw_content": page.get('content', '') if include_raw_content else '',
+                        "date_crawled": page.get('dateLastCrawled', '')
+                    }
+                    formatted_results.append(result)
+                
+                return {"query": query, "results": formatted_results}
+                
+        except Exception as e:
+            return {"query": query, "results": [], "error": str(e)}
+
+    search_tasks = [single_search(query) for query in search_queries]
     
     # Execute all search queries in parallel and return results
     search_results = await asyncio.gather(*search_tasks)
@@ -532,7 +569,7 @@ async def get_search_tool(search_api: SearchAPI):
     """Configure and return search tools based on the specified API provider.
     
     Args:
-        search_api: The search API provider to use (Anthropic, OpenAI, Tavily, or None)
+        search_api: The search API provider to use (bocha, or None)
         
     Returns:
         List of configured search tool objects for the specified provider
@@ -545,13 +582,13 @@ async def get_search_tool(search_api: SearchAPI):
             "max_uses": 5
         }]
         
-    elif search_api == SearchAPI.OPENAI:
+    elif search_api == SearchAPI.AZURE_OPENAI:
         # OpenAI's web search preview functionality
         return [{"type": "web_search_preview"}]
         
-    elif search_api == SearchAPI.TAVILY:
-        # Configure Tavily search tool with metadata
-        search_tool = tavily_search
+    elif search_api == SearchAPI.BOCHA:
+        # Configure bocha search tool with metadata
+        search_tool = bocha_search
         search_tool.metadata = {
             **(search_tool.metadata or {}), 
             "type": "search", 
@@ -584,9 +621,16 @@ async def get_all_tools(config: RunnableConfig):
     search_tools = await get_search_tool(search_api)
     tools.extend(search_tools)
     
-    # Track existing tool names to prevent conflicts
+    #！！！！！！！！！！！
     existing_tool_names = {
-        tool.name if hasattr(tool, "name") else tool.get("name", "web_search") 
+        (
+            tool.name
+            if hasattr(tool, "name")
+            else (
+                getattr(tool, "__name__", None)
+                or (tool.get("name", "web_search") if isinstance(tool, dict) else type(tool).__name__)
+            )
+        )
         for tool in tools
     }
     
@@ -677,16 +721,17 @@ def is_token_limit_exceeded(exception: Exception, model_name: str = None) -> boo
     # Step 1: Determine provider from model name if available
     provider = None
     if model_name:
+        
         model_str = str(model_name).lower()
-        if model_str.startswith('openai:'):
-            provider = 'openai'
+        if model_str.startswith('azure_openai:'):
+            provider = 'azure_openai'
         elif model_str.startswith('anthropic:'):
             provider = 'anthropic'
         elif model_str.startswith('gemini:') or model_str.startswith('google:'):
             provider = 'gemini'
     
     # Step 2: Check provider-specific token limit patterns
-    if provider == 'openai':
+    if provider == 'azure_openai':
         return _check_openai_token_limit(exception, error_str)
     elif provider == 'anthropic':
         return _check_anthropic_token_limit(exception, error_str)
@@ -709,8 +754,8 @@ def _check_openai_token_limit(exception: Exception, error_str: str) -> bool:
     
     # Check if this is an OpenAI exception
     is_openai_exception = (
-        'openai' in exception_type.lower() or 
-        'openai' in module_name.lower()
+        'azure_openai' in exception_type.lower() or 
+        'azure_openai' in module_name.lower()
     )
     
     # Check for typical OpenAI token limit error types
@@ -786,46 +831,13 @@ def _check_gemini_token_limit(exception: Exception, error_str: str) -> bool:
 
 # NOTE: This may be out of date or not applicable to your models. Please update this as needed.
 MODEL_TOKEN_LIMITS = {
-    "openai:gpt-4.1-mini": 1047576,
-    "openai:gpt-4.1-nano": 1047576,
-    "openai:gpt-4.1": 1047576,
-    "openai:gpt-4o-mini": 128000,
-    "openai:gpt-4o": 128000,
-    "openai:o4-mini": 200000,
-    "openai:o3-mini": 200000,
-    "openai:o3": 200000,
-    "openai:o3-pro": 200000,
-    "openai:o1": 200000,
-    "openai:o1-pro": 200000,
-    "anthropic:claude-opus-4": 200000,
-    "anthropic:claude-sonnet-4": 200000,
-    "anthropic:claude-3-7-sonnet": 200000,
-    "anthropic:claude-3-5-sonnet": 200000,
-    "anthropic:claude-3-5-haiku": 200000,
-    "google:gemini-1.5-pro": 2097152,
-    "google:gemini-1.5-flash": 1048576,
-    "google:gemini-pro": 32768,
-    "cohere:command-r-plus": 128000,
-    "cohere:command-r": 128000,
-    "cohere:command-light": 4096,
-    "cohere:command": 4096,
-    "mistral:mistral-large": 32768,
-    "mistral:mistral-medium": 32768,
-    "mistral:mistral-small": 32768,
-    "mistral:mistral-7b-instruct": 32768,
-    "ollama:codellama": 16384,
-    "ollama:llama2:70b": 4096,
-    "ollama:llama2:13b": 4096,
-    "ollama:llama2": 4096,
-    "ollama:mistral": 32768,
-    "bedrock:us.amazon.nova-premier-v1:0": 1000000,
-    "bedrock:us.amazon.nova-pro-v1:0": 300000,
-    "bedrock:us.amazon.nova-lite-v1:0": 300000,
-    "bedrock:us.amazon.nova-micro-v1:0": 128000,
-    "bedrock:us.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
-    "bedrock:us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock:us.anthropic.claude-opus-4-20250514-v1:0": 200000,
-    "anthropic.claude-opus-4-1-20250805-v1:0": 200000,
+    # "openai:gpt-4.1-mini": 1047576,
+    # "openai:gpt-4.1-nano": 1047576,
+    "azure_openai:gpt-4.1": 1047576,
+    # "openai:gpt-4o-mini": 128000,
+    
+  
+   
 }
 
 def get_model_token_limit(model_string):
@@ -889,37 +901,3 @@ def get_config_value(value):
     else:
         return value.value
 
-def get_api_key_for_model(model_name: str, config: RunnableConfig):
-    """Get API key for a specific model from environment or config."""
-    should_get_from_config = os.getenv("GET_API_KEYS_FROM_CONFIG", "false")
-    model_name = model_name.lower()
-    if should_get_from_config.lower() == "true":
-        api_keys = config.get("configurable", {}).get("apiKeys", {})
-        if not api_keys:
-            return None
-        if model_name.startswith("openai:"):
-            return api_keys.get("OPENAI_API_KEY")
-        elif model_name.startswith("anthropic:"):
-            return api_keys.get("ANTHROPIC_API_KEY")
-        elif model_name.startswith("google"):
-            return api_keys.get("GOOGLE_API_KEY")
-        return None
-    else:
-        if model_name.startswith("openai:"): 
-            return os.getenv("OPENAI_API_KEY")
-        elif model_name.startswith("anthropic:"):
-            return os.getenv("ANTHROPIC_API_KEY")
-        elif model_name.startswith("google"):
-            return os.getenv("GOOGLE_API_KEY")
-        return None
-
-def get_tavily_api_key(config: RunnableConfig):
-    """Get Tavily API key from environment or config."""
-    should_get_from_config = os.getenv("GET_API_KEYS_FROM_CONFIG", "false")
-    if should_get_from_config.lower() == "true":
-        api_keys = config.get("configurable", {}).get("apiKeys", {})
-        if not api_keys:
-            return None
-        return api_keys.get("TAVILY_API_KEY")
-    else:
-        return os.getenv("TAVILY_API_KEY")
