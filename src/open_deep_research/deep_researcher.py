@@ -322,7 +322,7 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                 }, config) 
                 for tool_call in allowed_conduct_research_calls
             ]
-            print('--------------------------------research_tasks--------------------------------')
+  
           
             try:
                 tool_results = await asyncio.gather(*research_tasks)
@@ -405,7 +405,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     
     # Get all available research tools (search, MCP, think_tool)
     tools = await get_all_tools(config)
-
+   
     if len(tools) == 0:
         raise ValueError(
             "No tools found to conduct research: Please configure either your "
@@ -478,7 +478,7 @@ async def researcher_tools(state: ResearcherState, config: RunnableConfig) -> Co
     configurable = Configuration.from_runnable_config(config)
     researcher_messages = state.get("researcher_messages", [])
     most_recent_message = researcher_messages[-1]
-    
+   
     # Early exit if no tool calls were made (including native web search)
     has_tool_calls = bool(most_recent_message.tool_calls)
     has_native_search = (
@@ -559,18 +559,18 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config({
-        "model": configurable.compression_model,
+    synthesizer_model0 = init_chat_model(api_key=azure_key,azure_endpoint=azure_endpoint,api_version=api_version,disable_streaming=True)
+    synthesizer_model = synthesizer_model0.with_config({
+        "model": synthesizer_model0,
         "max_tokens": configurable.compression_model_max_tokens,
         "api_key": azure_key,
         "azure_endpoint": azure_endpoint,
         "api_version": api_version,
-        "tags": ["langsmith:nostream"]
     })
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
-   
+    
     # Add instruction to switch from research mode to compression mode
     researcher_messages.append(HumanMessage(content=compress_research_simple_human_message))
     
@@ -593,7 +593,6 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
                 str(message.content) 
                 for message in filter_messages(researcher_messages, include_types=["tool", "ai"])
             ])
-            
             # Return successful compression result
             return {
                 "compressed_research": str(response.content),
@@ -605,7 +604,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             
             # Handle token limit exceeded by removing older messages
             if is_token_limit_exceeded(e, configurable.research_model):
-                print('-------------------------------------11111111111111111111------------------------------------')
+                
                 researcher_messages = remove_up_to_last_ai_message(researcher_messages)
                 continue
             

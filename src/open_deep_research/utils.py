@@ -45,7 +45,7 @@ BOCHA_SEARCH_DESCRIPTION = (
 @tool(description=BOCHA_SEARCH_DESCRIPTION)
 async def bocha_search(
     queries: List[str],
-    max_results: Annotated[int, InjectedToolArg] = 5,
+    max_results: Annotated[int, InjectedToolArg] = 3,
     topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
     config: RunnableConfig = None
 ) -> str:
@@ -60,6 +60,7 @@ async def bocha_search(
     Returns:
         Formatted string containing summarized search results
     """
+  
     # Step 1: Execute search queries asynchronously
     search_results = await bocha_search_async(
         queries,
@@ -142,7 +143,7 @@ async def bocha_search(
 #        
 async def bocha_search_async(
     search_queries, 
-    max_results: int = 20, 
+    max_results: int = 3, 
     topic: Literal["general", "news", "finance"] = "general", 
     include_raw_content: bool = True, 
     config: RunnableConfig = None
@@ -165,7 +166,7 @@ async def bocha_search_async(
         'Authorization': api_key,
         'Content-Type': 'application/json'
     }
-    
+   
     # Create search tasks for parallel execution
     async def single_search(query):
         data = {
@@ -175,14 +176,12 @@ async def bocha_search_async(
             "include_raw_content": include_raw_content,
             "summary": True,
         }
-        
+       
         try:
             async with httpx.AsyncClient() as client:
                 
                 response = await client.post(url, headers=headers, json=data, timeout=10.0)
-            
                 response.raise_for_status()
-                
                 json_response = response.json()
                 webpages = json_response.get("data", {}).get("webPages", {}).get("value", [])
                 
@@ -196,8 +195,9 @@ async def bocha_search_async(
                         "raw_content": page.get('content', '') if include_raw_content else '',
                         "date_crawled": page.get('dateLastCrawled', '')
                     }
+                    
                     formatted_results.append(result)
-                
+           
                 return {"query": query, "results": formatted_results}
                 
         except Exception as e:
