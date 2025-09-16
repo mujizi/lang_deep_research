@@ -263,7 +263,6 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     supervisor_messages = state.get("supervisor_messages", [])
     research_iterations = state.get("research_iterations", 0)
     most_recent_message = supervisor_messages[-1]
-   
     # Define exit criteria for research phase
     exceeded_allowed_iterations = research_iterations > configurable.max_researcher_iterations
     no_tool_calls = not most_recent_message.tool_calls
@@ -323,7 +322,6 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
                 for tool_call in allowed_conduct_research_calls
             ]
   
-          
             try:
                 tool_results = await asyncio.gather(*research_tasks)
             except Exception as e:
@@ -439,7 +437,6 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     # Step 3: Generate researcher response with system context
     messages = [SystemMessage(content=researcher_prompt)] + researcher_messages
     response = await research_model.ainvoke(messages)
-    
     # Step 4: Update state and proceed to tool execution
     return Command(
         goto="researcher_tools",
@@ -559,14 +556,18 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model0 = init_chat_model(api_key=azure_key,azure_endpoint=azure_endpoint,api_version=api_version,disable_streaming=True)
-    synthesizer_model = synthesizer_model0.with_config({
-        "model": synthesizer_model0,
-        "max_tokens": configurable.compression_model_max_tokens,
-        "api_key": azure_key,
-        "azure_endpoint": azure_endpoint,
-        "api_version": api_version,
-    })
+    
+    # synthesizer_model0 = init_chat_model(api_key=azure_key,azure_endpoint=azure_endpoint,api_version=api_version,disable_streaming=True)
+    # synthesizer_model = synthesizer_model0.with_config({
+    #     "model": configurable.compression_model,
+    #     "max_tokens": configurable.compression_model_max_tokens,
+    #     "api_key": azure_key,
+    #     "azure_endpoint": azure_endpoint,
+    #     "api_version": api_version,
+    #     "tags": ["langsmith:nostream"]
+    # })
+    synthesizer_model0 = init_chat_model("azure_openai:gpt-4.1",api_key=azure_key,azure_endpoint=azure_endpoint,api_version=api_version,disable_streaming=True)
+    synthesizer_model = synthesizer_model0.with_fallbacks([init_chat_model("azure_openai:gpt-4.1",api_key=azure_key,azure_endpoint=azure_endpoint,api_version=api_version,disable_streaming=True,max_tokens=configurable.compression_model_max_tokens)])
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -581,13 +582,12 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     while synthesis_attempts < max_attempts:
         try:
             # Create system prompt focused on compression task
-           
+            
             compression_prompt = compress_research_system_prompt.format(date=get_today_str())
             messages = [SystemMessage(content=compression_prompt)] + researcher_messages
            
             # Execute compression
             response = await synthesizer_model.ainvoke(messages)
-      
             # Extract raw notes from all tool and AI messages
             raw_notes_content = "\n".join([
                 str(message.content) 
@@ -668,7 +668,7 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
         "api_key": azure_key,
         "azure_endpoint": azure_endpoint,
         "api_version": api_version,
-        "tags": ["langsmith:nostream"]
+        # "tags": ["langsmith:nostream"]
     }
     
     # Step 3: Attempt report generation with token limit retry logic
